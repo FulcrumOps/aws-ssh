@@ -1,0 +1,198 @@
+#!/bin/bash
+
+CACHE_FILE=~/.aws-ssh-cache
+CACHE_FILE_MAX_AGE_MINUTES=60
+DEFAULT_USER=ubuntu
+DEFAULT_SSH_KEY=~/.ssh/id_ed25519.pub
+SSH_KEY=~/.ssh/id_ed25519.pub
+DEBUG=0
+VERBOSE=0
+
+function usage() {
+	echo "$0 [ping|ssh] [search terms]"
+	echo
+
+	echo "-h: show this help"
+	echo "-u: user to ssh as (default: $DEFAULT_USER)"
+	echo "-k: ssh key to use (default: $DEFAULT_SSH_KEY)"
+	echo "-d: debug mode (don't actually run commands)"
+	echo "-v: verbose mode (print commands)"
+	echo "-r: refresh cache"
+
+	echo
+	echo "Search terms are space separated and are matched against the instance id,"
+	echo "public ip, private ip, and tags."
+	echo
+	echo "If more than one instance matches, all matches are printed and nothing"
+	echo "else is done."
+	echo
+	echo "If only one instance matches, the action is performed on that instance."
+	echo
+	echo "If the action is ping, the public ip of the instance is pinged."
+	echo
+	echo "If the action is ssh, the public ip of the instance is pinged and then"
+	echo "an ssh connection via ec2-instance-connect is attempted."
+	echo	
+	echo "NOTE: You may want to set AWS_PROFILE to the profile you want to use."
+}
+
+function sso_login() {
+	if [[ $VERBOSE == 1 || $DEBUG == 1 ]] ; then
+		echo "aws sts get-caller-identity"
+	fi
+	aws sts get-caller-identity > /dev/null 2>&1
+	if [[ $? -ne 0 ]] ; then
+		if [[ $VERBOSE == 1 || $DEBUG == 1 ]] ; then
+			echo aws sso login
+		fi
+		aws sso login
+	fi
+}
+
+USER=$DEFAULT_USER
+SSH_KEY=$DEFAULT_SSH_KEY
+
+optstring=":u:k:hdvr"
+
+while getopts ${optstring} arg; do
+  case ${arg} in
+    h)
+      usage
+	  exit 0
+      ;;
+	u)
+	  USER=$OPTARG
+	  ;;
+	k)
+	  SSH_KEY=$OPTARG
+	  ;;
+	d)
+	DEBUG=1
+	;;
+	v)
+	VERBOSE=1
+	;;
+	r)
+	rm -f $CACHE_FILE
+	;;
+    :)
+      echo "$0: Must supply an argument to -$OPTARG." >&2
+      exit 1
+      ;;
+    ?)
+      echo "Invalid option: -${OPTARG}."
+      exit 2
+      ;;
+  esac
+done
+
+shift $((OPTIND-1))
+
+action=$1
+if [[ $action != "ping" && $action != "ssh" ]] ; then
+	usage
+	exit 1
+fi
+
+shift
+
+LOGGED_IN=0
+
+if [[ ! -f "$CACHE_FILE" ]] ; then
+	sso_login
+	LOGGED_IN=1
+	if [[ $VERBOSE == 1 || $DEBUG == 1 ]] ; then
+		echo aws ec2 describe-instances --filters "Name=instance-state-name,Values=running"
+	fi
+	json=$(aws ec2 describe-instances --filters "Name=instance-state-name,Values=running" | tee $CACHE_FILE)
+else
+	if find $CACHE_FILE -mmin +$CACHE_FILE_MAX_AGE_MINUTES -print -quit | grep -q .; then
+		sso_login
+		LOGGED_IN=1
+		if [[ $VERBOSE == 1 || $DEBUG == 1 ]] ; then
+			echo aws ec2 describe-instances --filters "Name=instance-state-name,Values=running"
+		fi
+		json=$(aws ec2 describe-instances --filters "Name=instance-state-name,Values=running" | tee $CACHE_FILE)
+	else
+		json=$(cat $CACHE_FILE)
+	fi
+fi
+
+base=$(echo $json | jq -r '.Reservations[].Instances[] | "\(.InstanceId) \(.PublicIpAddress) \(.PrivateIpAddress)"')
+data=""
+
+results=()
+while IFS= read -r row ; do
+    instance_id=$(echo "$row" | awk '{ print $1 }')
+	pattern='i-[a-fA-F0-9]{17}'
+
+	if [[ "$instance_id" =~ $pattern ]] ; then
+		tags=$(echo $json | jq -r ".Reservations[].Instances[] | select(.InstanceId == \"$instance_id\") | \"\(.Tags[] | \"\(.Key)=\(.Value)\")\"")
+		search="$row "
+		for tag in $tags ; do
+			search="$search$tag "
+		done
+		matches=1
+		for arg in "$@" ; do
+			if ! echo "$search" | grep $arg > /dev/null ; then
+				matches=0
+				break
+			fi
+		done
+		if [[ $matches -eq 1 ]] ; then
+			results+=("$search")
+		fi
+	fi
+done <<< "$base"
+
+length=${#results[@]}
+if [[ $length -gt 0 && ($VERBOSE == 1 || $DEBUG == 1) ]] ; then
+	echo "Found $length matches."
+fi
+
+if [[ $length -eq 0 ]] ; then
+	echo "No matches."
+	exit 1
+fi
+
+if [[ $length -gt 1 ]] ; then
+	for element in "${results[@]}"; do
+    	echo "$element"
+	done
+	exit
+fi
+
+if [[ $action == "ping" ]] ; then
+	echo "Matched: ${results[0]}"
+	ip=$(echo $results[0] | awk '{print $2}')
+	if [[ $VERBOSE == 1 || $DEBUG == 1 ]] ; then
+		echo "ping -c1 -t2 $ip"
+	fi
+	if [[ $DEBUG == 0 ]] ; then
+		ping -c1 -t2 $ip
+	fi
+else
+	echo "Matched: ${results[0]}"
+
+	if [[ $LOGGED_IN -eq 0 ]] ; then
+		sso_login
+	fi
+
+	id=$(echo ${results[0]} | awk '{print $1}')
+	if [[ $VERBOSE == 1 || $DEBUG == 1 ]] ; then
+    	echo "aws ec2-instance-connect send-ssh-public-key --instance-id $id --instance-os-user $USER --ssh-public-key file://$SSH_KEY"
+	fi
+	if [[ $DEBUG == 0 ]] ; then
+ 	   aws ec2-instance-connect send-ssh-public-key --instance-id $id --instance-os-user $USER --ssh-public-key file://$SSH_KEY | cat
+	fi
+	if [[ $? -eq 0 ]] ; then
+		if [[ $VERBOSE == 1 || $DEBUG == 1 ]] ; then
+	    	echo aws ec2-instance-connect ssh --instance-id $id --os-user $USER
+		fi
+		if [[ $DEBUG == 0 ]] ; then
+	    	aws ec2-instance-connect ssh --instance-id $id --os-user $USER
+		fi
+	else
+		echo "Something went wrong. Quitting"
+	fi
+fi

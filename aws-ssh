@@ -8,32 +8,32 @@ SSH_KEY=~/.ssh/id_ed25519.pub
 DEBUG=0
 VERBOSE=0
 
-function usage() {
-	echo "$0 [ping|ssh] [search terms]"
-	echo
+usage() {
+    cat <<EOF
+$0 [ping|ssh] [search terms]
 
-	echo "-h: show this help"
-	echo "-u: user to ssh as (default: $DEFAULT_USER)"
-	echo "-k: ssh key to use (default: $DEFAULT_SSH_KEY)"
-	echo "-d: debug mode (don't actually run commands)"
-	echo "-v: verbose mode (print commands)"
-	echo "-r: refresh cache"
+-h: show this help
+-u: user to ssh as (default: $DEFAULT_USER)
+-k: ssh key to use (default: $DEFAULT_SSH_KEY)
+-d: debug mode (don't actually run commands)
+-v: verbose mode (print commands)
+-r: refresh cache
 
-	echo
-	echo "Search terms are space separated and are matched against the instance id,"
-	echo "public ip, private ip, and tags."
-	echo
-	echo "If more than one instance matches, all matches are printed and nothing"
-	echo "else is done."
-	echo
-	echo "If only one instance matches, the action is performed on that instance."
-	echo
-	echo "If the action is ping, the public ip of the instance is pinged."
-	echo
-	echo "If the action is ssh, the public ip of the instance is pinged and then"
-	echo "an ssh connection via ec2-instance-connect is attempted."
-	echo	
-	echo "NOTE: You may want to set AWS_PROFILE to the profile you want to use."
+Search terms are space separated and are matched against the instance id,
+public ip, private ip, and tags.
+
+If more than one instance matches, all matches are printed and nothing
+else is done.
+
+If only one instance matches, the action is performed on that instance.
+
+If the action is ping, the public ip of the instance is pinged.
+
+If the action is ssh, the public ip of the instance is pinged and then
+an ssh connection via ec2-instance-connect is attempted.
+
+NOTE: You may want to set AWS_PROFILE to the profile you want to use.
+EOF
 }
 
 function sso_login() {

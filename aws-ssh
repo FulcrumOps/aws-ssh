@@ -194,5 +194,6 @@ else
 		fi
 	else
 		echo "Something went wrong. Quitting"
+		exit 1
 	fi
 fi
